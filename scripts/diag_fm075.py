@@ -25,7 +25,8 @@ X = np.array(XF["design_vector"])
 PITCH0 = XF["trim_pitch_deg"]
 
 
-def make_solver_cfg(x, trim_pitch, dpsi, n_rev, freeze, n_far):
+def make_solver_cfg(x, trim_pitch, dpsi, n_rev, freeze, n_far,
+                    phi=1.3, cdf=1.0):
     Omega, chord_R, twist, camber, tc_r, tc_t = build_design(x, trim_pitch)
     fam = AirfoilFamily(R=R, tc_root=tc_r, tc_tip=tc_t, camber=camber, t_te_phys=0.002)
     sections = []
@@ -41,7 +42,7 @@ def make_solver_cfg(x, trim_pitch, dpsi, n_rev, freeze, n_far):
         M = min(mach_tip * r_mid, 0.55)
         rs = foil.polar(ALPHA_TAB, Re=Re, M=M)
         sections.append(SecTab(ALPHA_TAB, np.array([r.cl for r in rs]),
-                               np.array([r.cd for r in rs])))
+                               np.array([r.cd for r in rs]) * cdf))
     blade = BladeDef(R=R, Rhub=0.1664, B=B, r=RR, chord=chord_R, twist=twist)
     sol = RotorSolver(blade, Omega, rho=RHO, dpsi_deg=dpsi, n_rev=n_rev,
                       rc0_frac=0.10)
@@ -49,13 +50,13 @@ def make_solver_cfg(x, trim_pitch, dpsi, n_rev, freeze, n_far):
     sol.n_far_rev = n_far
     sol.relax_it = 1.3
     sol.gamma_relax = 0.35
-    sol.inflow_scale = 1.3
+    sol.inflow_scale = phi
     sol.sections = sections
     return sol
 
 
-def run_pitch(x, pitch, cfg):
-    sol = make_solver_cfg(x, pitch, *cfg)
+def run_pitch(x, pitch, cfg, phi=1.3, cdf=1.0):
+    sol = make_solver_cfg(x, pitch, *cfg, phi=phi, cdf=cdf)
     t0 = time.time()
     res = sol.solve(n_outer=26, n_sweeps=4,
                     ct_guess=max(T_TARGET / (RHO * np.pi * R ** 2 * x[0] ** 2), 1e-4))
@@ -69,14 +70,14 @@ def run_pitch(x, pitch, cfg):
     return T, P, ld
 
 
-def trim_cfg(x, cfg, pitch0=PITCH0, tol=0.01):
+def trim_cfg(x, cfg, pitch0=PITCH0, tol=0.01, phi=1.3, cdf=1.0):
     """3 点割线法(对 T,不是 P)配平到 T_TARGET ±tol,返回拆分账本."""
-    lo = (pitch0 - 1.5, *run_pitch(x, pitch0 - 1.5, cfg))
-    hi = (pitch0 + 1.5, *run_pitch(x, pitch0 + 1.5, cfg))
+    lo = (pitch0 - 1.5, *run_pitch(x, pitch0 - 1.5, cfg, phi, cdf))
+    hi = (pitch0 + 1.5, *run_pitch(x, pitch0 + 1.5, cfg, phi, cdf))
     best = None
     for _ in range(4):
         p = hi[0] - (hi[1] - T_TARGET) * (hi[0] - lo[0]) / (hi[1] - lo[1])
-        r = (p, *run_pitch(x, p, cfg))
+        r = (p, *run_pitch(x, p, cfg, phi, cdf))
         best = min([c for c in (lo, hi, r)], key=lambda c: abs(c[1] - T_TARGET))
         if abs(r[1] - T_TARGET) < tol * T_TARGET:
             best = r
@@ -88,39 +89,49 @@ def trim_cfg(x, cfg, pitch0=PITCH0, tol=0.01):
     return best  # (pitch, T, P, ld)
 
 
-def report(name, cfg):
-    print(f"\n=== {name}  dpsi={cfg[0]} n_rev={cfg[1]} freeze={cfg[2]} far={cfg[3]} ===",
+def report(name, cfg, phi=1.3, cdf=1.0):
+    print(f"\n=== {name}  dpsi={cfg[0]} n_rev={cfg[1]} freeze={cfg[2]} far={cfg[3]} "
+          f"phi={phi} cdf={cdf} ===",
           flush=True)
-    pitch, T, P, ld = trim_cfg(X, cfg)
+    pitch, T, P, ld = trim_cfg(X, cfg, phi=phi, cdf=cdf)
     A = np.pi * R ** 2
     P_ideal = T ** 1.5 / np.sqrt(2 * RHO * A)
     vi_ideal = np.sqrt(T / (2 * RHO * A))
     k_raw = ld["vi_disk"] / vi_ideal
     k_eff = ld["P_ind"] / P_ideal
-    fm_deliv = P_ideal / P
-    fm_nokb = P_ideal / (T * ld["vi_disk"] + ld["P_prof"])
+    fm_v2 = P_ideal / P
+    P_ax = ld["P_axial"]
     print(f"  trim_pitch={pitch:.2f}  T={T:.0f} N")
     print(f"  P_total={P/1e3:.2f} kW | P_ideal={P_ideal/1e3:.2f} | "
-          f"P_ind={ld['P_ind']/1e3:.2f} ({100*ld['P_ind']/P:.1f}%) | "
+          f"P_axial={P_ax/1e3:.2f} ({100*P_ax/P:.1f}%) | "
+          f"P_swirl={ld['P_swirl']/1e3:.2f} ({100*ld['P_swirl']/P:.1f}%) | "
+          f"P_nonuni={ld['P_nonuniform']/1e3:.2f} ({100*ld['P_nonuniform']/P:.1f}%) | "
           f"P_prof={ld['P_prof']/1e3:.2f} ({100*ld['P_prof']/P:.1f}%)")
     print(f"  vi_disk={ld['vi_disk']:.2f} m/s vs vi_ideal={vi_ideal:.2f} -> "
-          f"kappa_raw={k_raw:.3f}, kappa_B={ld['kappa_B']:.2f}, "
-          f"kappa_eff={k_eff:.3f}")
-    print(f"  FM (交付口径 kappa_B=1.2): {fm_deliv:.3f}")
-    print(f"  FM (纯尾迹口径 kappa_B=1.0): {fm_nokb:.3f}")
+          f"kappa_raw={k_raw:.3f}, kappa_eff={k_eff:.3f}")
+    print(f"  FM (v2 显式口径, 无 kappa_B): {fm_v2:.3f}")
     return dict(name=name, cfg=list(cfg), pitch=pitch, T=T, P=P,
                 P_ideal=P_ideal, **{k: ld[k] for k in
-                ("P_ind", "P_prof", "vi_disk", "kappa_B")},
+                ("P_ind", "P_axial", "P_swirl", "P_nonuniform", "P_prof",
+                 "vi_disk", "v_area")},
                 kappa_raw=k_raw, kappa_eff=k_eff,
-                FM_delivered=fm_deliv, FM_kappaB1=fm_nokb)
+                FM_v2=fm_v2)
 
 
 if __name__ == "__main__":
+    phi = 1.3
+    cdf = 1.0
+    if "--phi" in sys.argv:
+        phi = float(sys.argv[sys.argv.index("--phi") + 1])
+    if "--cdf" in sys.argv:
+        cdf = float(sys.argv[sys.argv.index("--cdf") + 1])
     out = []
-    out.append(report("delivered-hifi", (7.5, 6.0, 5.0, 7.0)))
-    out.append(report("deep-wake", (7.5, 9.0, 8.0, 12.0)))
+    out.append(report("delivered-hifi", (7.5, 6.0, 5.0, 12.0), phi=phi, cdf=cdf))
+    if "--deep" in sys.argv:
+        out.append(report("deep-wake", (7.5, 9.0, 8.0, 12.0), phi=phi, cdf=cdf))
     if "--ultra" in sys.argv:
-        out.append(report("ultra", (5.0, 10.0, 9.0, 12.0)))
-    json.dump(out, open("E:/旋翼设计/results/diag_fm075.json", "w"),
+        out.append(report("ultra", (5.0, 10.0, 9.0, 12.0), phi=phi, cdf=cdf))
+    suffix = f"_phi{phi:.2f}_cd{cdf:.2f}"
+    json.dump(out, open(f"E:/旋翼设计/results/diag_fm075_v2{suffix}.json", "w"),
               indent=1, default=float)
-    print("\nsaved results/diag_fm075.json", flush=True)
+    print(f"\nsaved results/diag_fm075_v2{suffix}.json", flush=True)

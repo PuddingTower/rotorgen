@@ -1,0 +1,6 @@
+2026-10-24T18:34:02+08:00 | main session: A1 done (FM_v2=0.837/0.823, ledger physical), A2 phi-sweep running (log results/logs/calib_a2_phi.txt), A3 DJI9450 case done in bench2.py (UIUC Deters2017 digitized), A4 runner ready
+2026-10-24T18:57:51+08:00 | A2 done phi_cal=1.2; A5 PASS dFM=0; PhaseB smoke PASS; A4 matrix (ultra phi1.2 cd1.15) running, log results/logs/bench_v2_ultra_phi120_cd115.txt
+2026-10-24T19:13:04+08:00 | A4 C-T done: core CQm +2.6/-4.6/-8.8 pct -> kappa_cal=1.03 adopted (min-max centering, A4 clause). design_opt2 kappa_cal=1.03. Waiting MT/har/dji families
+2026-10-24T19:56:41+08:00 | MAJOR: CQ convention bug (xR) found+fixed; plan section-1.2 conclusion inverted; A4 rerunning with fixed conventions (results/logs/bench_v2_fixed_conv.txt)
+2026-10-24T21:18:56+08:00 | Gate A: stop-loss triggered (kappa_cal~1.18-1.22), adopted 1.20; Phase C CMA-ES launched overnight (results/logs/cmaes_run1.txt)
+2026-10-24T21:29:42+08:00 | USER PAUSE: CMA-ES stopped at eval 11/560 (results/logs/cmaes_evals.jsonl, resumable via results/cmaes_best.json); watchdog automation removed; all computations stopped

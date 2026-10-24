@@ -1,0 +1,28 @@
+
+=== repeat-1  dpsi=7.5 n_rev=6.0 freeze=5.0 far=12.0 ===
+    pitch= 16.62  T= 1784.4 N  P= 31.92 kW  P_ind=29.97 P_prof= 2.23 vi_disk=16.56 m/s  [34s]
+    pitch= 19.62  T= 2213.9 N  P= 43.39 kW  P_ind=41.17 P_prof= 2.07 vi_disk=18.50 m/s  [35s]
+    pitch= 17.86  T= 1995.6 N  P= 36.61 kW  P_ind=34.39 P_prof= 2.20 vi_disk=17.67 m/s  [35s]
+    pitch= 17.66  T= 1858.6 N  P= 34.69 kW  P_ind=31.70 P_prof= 2.25 vi_disk=17.82 m/s  [35s]
+    pitch= 17.81  T= 1931.0 N  P= 35.86 kW  P_ind=33.49 P_prof= 2.23 vi_disk=17.35 m/s  [34s]
+    pitch= 17.83  T= 1960.5 N  P= 35.93 kW  P_ind=33.50 P_prof= 2.25 vi_disk=18.13 m/s  [35s]
+  trim_pitch=17.83  T=1961 N
+  P_total=35.93 kW | P_ideal=30.09 | P_axial=33.30 (92.7%) | P_swirl=0.20 (0.5%) | P_nonuni=0.67 (1.9%) | P_prof=2.25 (6.3%)
+  vi_disk=18.13 m/s vs vi_ideal=15.35 -> kappa_raw=1.181, kappa_eff=1.113
+  FM (v2 显式口径, 无 kappa_B): 0.837
+
+=== repeat-2  dpsi=7.5 n_rev=6.0 freeze=5.0 far=12.0 ===
+    pitch= 16.62  T= 1784.4 N  P= 31.92 kW  P_ind=29.97 P_prof= 2.23 vi_disk=16.56 m/s  [34s]
+    pitch= 19.62  T= 2213.9 N  P= 43.39 kW  P_ind=41.17 P_prof= 2.07 vi_disk=18.50 m/s  [42s]
+    pitch= 17.86  T= 1995.6 N  P= 36.61 kW  P_ind=34.39 P_prof= 2.20 vi_disk=17.67 m/s  [45s]
+    pitch= 17.66  T= 1858.6 N  P= 34.69 kW  P_ind=31.70 P_prof= 2.25 vi_disk=17.82 m/s  [43s]
+    pitch= 17.81  T= 1931.0 N  P= 35.86 kW  P_ind=33.49 P_prof= 2.23 vi_disk=17.35 m/s  [43s]
+    pitch= 17.83  T= 1960.5 N  P= 35.93 kW  P_ind=33.50 P_prof= 2.25 vi_disk=18.13 m/s  [34s]
+  trim_pitch=17.83  T=1961 N
+  P_total=35.93 kW | P_ideal=30.09 | P_axial=33.30 (92.7%) | P_swirl=0.20 (0.5%) | P_nonuni=0.67 (1.9%) | P_prof=2.25 (6.3%)
+  vi_disk=18.13 m/s vs vi_ideal=15.35 -> kappa_raw=1.181, kappa_eff=1.113
+  FM (v2 显式口径, 无 kappa_B): 0.837
+
+A5 REPEAT: FM = 0.8375 vs 0.8375  |dFM| = 0.0000 (PASS, target <0.005)
+          pitch = 17.834 vs 17.834
+saved results/a5_repeat.json

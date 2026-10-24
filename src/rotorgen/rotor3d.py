@@ -18,6 +18,21 @@ Formulation (classical validated free-wake performance method, Leishman school):
 Conventions: rotor frame with blade 0 along +x; air moves at -Omega (solid
 rotation) + Vaxial*z; positive Gamma = positive lift (+z); alpha_eff =
 twist + atan2(Vz, -Vy) [flow travels LE->TE = -y].
+
+FROZEN RUN PROTOCOL (design-accounting v2, Phase A of docs/FM075_PLAN.md):
+  Induced power: explicit physical terms (P_axial + P_swirl), disk sampling
+  n_psi=12 azimuths per blade sector x all loaded stations; NO blanket factor
+  (kappa_B removed -- it double-counted wake-resolved non-ideality).
+  Wake tiers (dpsi_deg / n_rev / freeze_rev / n_far_rev):
+    fast   10.0 / 4.5 / 3.5 / 7    design inner loop, ~13 s/eval
+    hi-fi   7.5 / 6.0 / 5.0 / 12   verification, ~25 s/eval
+    ultra   5.0 / 10.0 / 9.0 / 12  final delivery / gate checks, ~57 s/eval
+  Fixed in all tiers: rc0_frac=0.10, relax_it=1.3, gamma_relax=0.35,
+  n_sweeps=4, inflow_scale=1.0 unless a calibration case says otherwise.
+  Outer iterations / history averaging window:
+    design inner loop n_outer=22 window 6; verification n_outer=26 window 6;
+    final delivery n_outer=34 window 8.
+  Reproducibility target: same-configuration FM repeat spread < 0.005.
 """
 from __future__ import annotations
 import numpy as np
@@ -302,11 +317,23 @@ class RotorSolver:
             P_prof += D * U[i]
         thrust *= self.B
         P_prof *= self.B
-        # induced power: energy-consistent disk-mean downwash + swirl/nonuniformity
-        # loss factor kappa_B (documented; from wake azimuthal/annulus mean)
-        # thrust-weighted mean disk downwash (correct power weighting; excludes
-        # hub-screw-dominated inner annuli by construction)
-        n_psi = 12
+        # ---- induced power: explicit physical terms, ONE wake sampling (A1 v2).
+        # kappa_B blanket factor REMOVED: it multiplied the converged wake's own
+        # non-ideal induction a second time (measured kappa_raw ~1.18 for B=2
+        # before it). Accounting, all from the same disk sampling, no free
+        # parameters:
+        #   P_axial      = sum_i T_i * vi_i        -- work of each station's
+        #       thrust element against the wake-induced axial velocity at its
+        #       annulus (equals thrust * vi_disk, thrust-weighted disk mean).
+        #   P_swirl      = sum 0.5*rho*<vt^2>*vi dA -- swirl kinetic-energy flux
+        #       through the disk, tangential induced component at the same
+        #       points (disk-plane value; far-wake contraction strengthens
+        #       swirl, so this is the conservative/low side -- documented).
+        #   P_nonuniform (ledger item) = P_axial - T*v_area: covariance of the
+        #       spanwise loading with the per-annulus inflow's deviation from
+        #       the disk-mean. Already contained in P_axial; reported, not added.
+        n_psi = 12                      # azimuthal samples per blade sector
+        n_ang = n_psi * self.B          # full-circle sampling (same resolution)
         T_station = np.zeros(self.Ns)
         for i in range(self.Ns):
             a = alpha_eff[i]
@@ -314,33 +341,60 @@ class RotorSolver:
             T_station[i] = 0.5 * self.rho * U[i] ** 2 * cl * self.c_mid[i] * self.dr[i]
         if T_station.sum() <= 0:
             T_station = np.ones(self.Ns)
-        pts = []
-        wts = []
-        for i in range(self.Ns):
-            if self.r_mid[i] < 0.3 * self.blade.R or T_station[i] <= 0:
-                continue
-            rr_ = self.r_mid[i]
-            for m in range(n_psi):
-                ang = 2 * np.pi / self.B * m / n_psi
-                pts.append([rr_ * np.cos(ang), rr_ * np.sin(ang),
-                            self.coll_rows[1][i, 2]])
-                wts.append(T_station[i] / n_psi)
-        vi_disk = 0.0
-        if pts:
+        idx = [i for i in range(self.Ns) if T_station[i] > 0.0]
+        P_axial = P_swirl = v_area = vi_disk = 0.0
+        if idx:
+            pts = []
+            dA = []
+            for i in idx:
+                rr_ = self.r_mid[i]
+                for m in range(n_ang):
+                    ang = 2 * np.pi * m / n_ang
+                    pts.append([rr_ * np.cos(ang), rr_ * np.sin(ang),
+                                self.coll_rows[1][i, 2]])
+                dA.append(2 * np.pi * rr_ * self.dr[i])
             pts = np.ascontiguousarray(np.array(pts))
             vv = np.zeros_like(pts)
             velocity_at_points(wsegs, wgam, wrc2, pts, vv)
-            wts = np.array(wts)
-            vi_disk = float(np.clip(-np.sum(vv[:, 2] * wts) / np.sum(wts), 0.0, None))
-        kappa_B = getattr(self, 'kappa_B', 1.0 + 0.4 / self.B)
-        P_ind = kappa_B * thrust * vi_disk
+            n_st = len(idx)
+            vax = (-vv[:, 2]).reshape(n_st, n_ang)             # axial induced
+            rxy = np.maximum(np.hypot(pts[:, 0], pts[:, 1]).reshape(n_st, n_ang), 1e-6)
+            vth = ((-pts[:, 1] * vv[:, 0] + pts[:, 0] * vv[:, 1])
+                   .reshape(n_st, n_ang) / rxy)                # swirl component
+            T_s = T_station[idx]
+            dA = np.array(dA)
+            vi_ann = vax.mean(axis=1)
+            # T_station is per blade; the disk ledger is for the whole rotor
+            P_axial = float(self.B * np.sum(T_s * vi_ann))
+            v_area = float(np.sum(vi_ann * dA) / dA.sum())
+            P_swirl = float(np.sum(0.5 * self.rho * vth ** 2
+                                   * np.clip(vax, 0.0, None)
+                                   * (dA[:, None] / n_ang)))
+            vi_disk = max(P_axial / max(thrust, 1e-9), 0.0)
+        P_nonuniform = P_axial - thrust * max(v_area, 0.0)
+        # kappa_cal (A4): ONE global scalar calibrated on the benchmark core
+        # set (C-T theta>=8 matched-thrust CQ, min-max centering -> 1.03),
+        # absorbing residual modeling bias (far-wake swirl KE beyond the
+        # disk-plane sample, stall-adjacent profile drag). NOT the removed
+        # kappa_B blanket (which multiplied every case's wake induction
+        # unconditionally); kappa_cal is recorded with provenance in
+        # docs/FM075_PLAN.md and defaults to 1.0 (raw physical accounting).
+        kappa_cal = float(getattr(self, 'kappa_cal', 1.0))
+        P_ind = (P_axial + P_swirl) * kappa_cal
         power = P_ind + P_prof
         torque = power / self.Omega
-        q = self.rho * (self.Omega * self.blade.R) ** 2 * np.pi * self.blade.R ** 2
+        # coefficient conventions (2026-10-24 fix): CT = T/(rho Om^2 pi R^4),
+        # CQ = Q/(rho Om^2 pi R^5) -- the previous CQ used R^4, carrying a
+        # spurious xR factor that contaminated every benchmark CQ/FM-coefficient
+        # readout for R != 1 (physics in watts/N-m was always correct).
+        q_ct = self.rho * (self.Omega * self.blade.R) ** 2 * np.pi * self.blade.R ** 2
+        q_cq = q_ct * self.blade.R
         self._last_alpha = alpha_eff
         res = dict(thrust=thrust, torque=torque, power=power,
-                   CT=thrust / q, CQ=torque / q,
-                   P_ind=P_ind, P_prof=P_prof, vi_disk=vi_disk, kappa_B=kappa_B)
+                   CT=thrust / q_ct, CQ=torque / q_cq,
+                   P_ind=P_ind, P_axial=P_axial, P_swirl=P_swirl,
+                   P_nonuniform=P_nonuniform, P_prof=P_prof,
+                   vi_disk=vi_disk, v_area=v_area, kappa_cal=kappa_cal)
         self._last_loads = res
         return res
 

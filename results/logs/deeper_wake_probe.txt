@@ -1,0 +1,3 @@
+CT th8 @1250               CT=0.00484 (  +5.5%)  CQm= -12.0%  CQ=0.000343 (  -4.6%)  FM=0.694/0.611  [590s]
+CT th12 @1250              CT=0.00874 ( +10.6%)  CQm= -21.7%  CQ=0.000710 (  -8.9%)  FM=0.813/0.635  [422s]
+saved results/bench/deeper_wake_probe.json

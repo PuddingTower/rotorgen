@@ -1,0 +1,29 @@
+=== Part 1: 2D cross-check, NACA0012 ===
+  visc a=0 conv=True  cl: nfoil=0.0000 ours=0.0000 (-100.0%)  cd: nfoil=0.00530 ours=0.00484
+  visc a=1 conv=True  cl: nfoil=0.1072 ours=0.1095 (+2.2%)  cd: nfoil=0.00538 ours=0.00518
+  visc a=2 conv=True  cl: nfoil=0.2141 ours=0.2160 (+0.9%)  cd: nfoil=0.00565 ours=0.00502
+  visc a=3 conv=False  cl: nfoil=nan ours=0.3259 (+nan%)  cd: nfoil=nan ours=0.00531
+  visc a=4 conv=True  cl: nfoil=0.4263 ours=0.4379 (+2.7%)  cd: nfoil=0.00699 ours=0.00531
+  visc a=5 conv=True  cl: nfoil=0.5439 ours=0.5503 (+1.2%)  cd: nfoil=0.00806 ours=0.00540
+  inv  a=0  M0: nfoil=-0.0000 ours_inv=0.0000 (-100.0%)  M0.3: nfoil=-0.0000 ours_inv=0.0000 ours_visc=0.0000
+  inv  a=2  M0: nfoil=0.2417 ours_inv=0.2401 (-0.7%)  M0.3: nfoil=0.2569 ours_inv=0.2551 ours_visc=0.2160
+  inv  a=4  M0: nfoil=0.4831 ours_inv=0.4799 (-0.7%)  M0.3: nfoil=0.5150 ours_inv=0.5114 ours_visc=0.4379
+  inv  a=6  M0: nfoil=0.7239 ours_inv=0.7189 (-0.7%)  M0.3: nfoil=0.7758 ours_inv=0.7700 ours_visc=0.6635
+  inv  a=8  M0: nfoil=0.9638 ours_inv=0.9570 (-0.7%)  M0.3: nfoil=1.0410 ours_inv=1.0326 ours_visc=0.8872
+  inv  a=10  M0: nfoil=1.2025 ours_inv=1.1937 (-0.7%)  M0.3: nfoil=1.3130 ours_inv=1.3013 ours_visc=1.1090
+  inv  a=12  M0: nfoil=1.4398 ours_inv=1.4287 (-0.8%)  M0.3: nfoil=1.5952 ours_inv=1.5791 ours_visc=1.3310
+  inv  a=14  M0: nfoil=1.6753 ours_inv=1.6616 (-0.8%)  M0.3: nfoil=1.8926 ours_inv=1.8703 ours_visc=1.5503
+  inv  a=16  M0: nfoil=1.9089 ours_inv=1.8922 (-0.9%)  M0.3: nfoil=2.2132 ours_inv=2.1819 ours_visc=1.7734
+  Cl_alpha: nfoil=0.1088/deg ours=0.1101/deg (Ladson exp 0.109)
+
+=== Part 2: C-T core cases x phi sweep (ultra tier) ===
+
+--- phi = 1.0 ---
+Traceback (most recent call last):
+  File "E:\旋翼设计\scripts\calib_a2.py", line 109, in <module>
+    res["phi_sweep"] = part2_phi()
+                       ~~~~~~~~~^^
+  File "E:\旋翼设计\scripts\calib_a2.py", line 97, in part2_phi
+    for name, blade, Omega, secs, exp in cases.items():
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: not enough values to unpack (expected 5, got 2)

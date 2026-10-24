@@ -1,0 +1,11 @@
+
+=== delivered-hifi  dpsi=7.5 n_rev=6.0 freeze=5.0 far=12.0 phi=1.2 cdf=1.15 ===
+    pitch= 16.62  T= 1917.1 N  P= 35.82 kW  P_ind=33.23 P_prof= 2.56 vi_disk=17.61 m/s  [34s]
+    pitch= 19.62  T= 2358.2 N  P= 48.34 kW  P_ind=46.45 P_prof= 2.43 vi_disk=19.36 m/s  [33s]
+    pitch= 16.93  T= 1975.7 N  P= 36.97 kW  P_ind=34.60 P_prof= 2.46 vi_disk=17.07 m/s  [34s]
+  trim_pitch=16.93  T=1976 N
+  P_total=36.97 kW | P_ideal=30.44 | P_axial=34.42 (93.1%) | P_swirl=0.18 (0.5%) | P_nonuni=0.03 (0.1%) | P_prof=2.46 (6.7%)
+  vi_disk=17.07 m/s vs vi_ideal=15.41 -> kappa_raw=1.108, kappa_eff=1.137
+  FM (v2 显式口径, 无 kappa_B): 0.823
+
+saved results/diag_fm075_v2_phi1.20_cd1.15.json

@@ -1,0 +1,42 @@
+
+===== family ct (tier=ultra, phi=1.2, cd_factor=1.15) =====
+CT th5 @1250               CT=0.00235 ( +12.1%)  CQm=  -9.1%  CQ=0.000194 (  +7.8%)  FM=0.416/0.380  [129s]
+CT th5 @2050               CT=0.00247 ( -11.9%)  CQm=  -4.3%  CQ=0.000198 ( -20.9%)  FM=0.438/0.420  [130s]
+CT th8 @1250               CT=0.00475 (  +3.5%)  CQm=  +2.6%  CQ=0.000389 (  +8.0%)  FM=0.595/0.611  [115s]
+CT th8 @2050               CT=0.00478 (  +3.7%)  CQm=  -4.6%  CQ=0.000393 (  +0.8%)  FM=0.595/0.567  [115s]
+CT th12 @1250              CT=0.00858 (  +8.6%)  CQm=  -8.8%  CQ=0.000806 (  +3.3%)  FM=0.698/0.635  [115s]
+CT th12 @2050              CT=0.00847 ( +26.4%)  CQm= -34.0%  CQ=0.000797 (  -6.2%)  FM=0.691/0.457  [115s]
+
+===== family mt (tier=ultra, phi=1.2, cd_factor=1.15) =====
+E:\旋翼设计/src\rotorgen\rotor3d.py:424: RuntimeWarning: invalid value encountered in scalar power
+  fm = ct ** 1.5 / (np.sqrt(2.0) * cq) if cq > 0 else 0.0
+MartinTung th6@2500        CT=0.00368 ( +15.7%)  CQm= +56.7%  CQ=0.000955 ( +94.9%)  FM=0.165/0.368  [115s]
+MartinTung th6@3500        CT=0.00485 ( +52.0%)  CQm=  +4.8%  CQ=0.000963 ( +96.4%)  FM=0.248/0.370  [117s]
+MartinTung th8@2500        CT=0.00569 ( +22.7%)  CQm=+160.0%  CQ=0.002580 (+253.4%)  FM=0.118/0.443  [115s]
+MartinTung th8@3500        CT=0.00718 ( +54.5%)  CQm= -65.5%  CQ=0.000490 ( -33.8%)  FM=0.878/0.441  [115s]
+MartinTung th10@2500       CT=0.00904 ( +49.4%)  CQm= -56.4%  CQ=0.000813 ( -20.3%)  FM=0.747/0.468  [115s]
+MartinTung th12@2500       CT=0.01132 ( +55.0%)  CQm= -54.9%  CQ=0.001194 ( -12.9%)  FM=0.713/0.457  [115s]
+
+===== family har (tier=ultra, phi=1.2, cd_factor=1.15) =====
+Harrington1 th4            CT=0.00154 ( -19.6%)  CQm=+208.6%  CQ=0.000378 (+122.6%)  FM=0.113/0.352  [102s]
+Harrington1 th6            CT=0.00275 ( -16.5%)  CQm=+192.8%  CQ=0.000626 (+123.4%)  FM=0.163/0.474  [99s]
+Harrington1 th8            CT=0.00404 ( -15.5%)  CQm=+204.5%  CQ=0.000969 (+136.4%)  FM=0.187/0.569  [99s]
+Harrington1 th10           CT=0.00557 ( -11.9%)  CQm=+202.3%  CQ=0.001424 (+149.8%)  FM=0.206/0.622  [99s]
+Harrington1 th12           CT=0.00716 (  -8.4%)  CQm=+187.2%  CQ=0.001965 (+151.9%)  FM=0.218/0.624  [154s]
+
+===== family dji (tier=ultra, phi=1.2, cd_factor=1.15) =====
+DJI9450 @2000              CT=0.00887 ( -90.0%)  CQm= -56.4%  CQ=0.000093 ( -98.6%)  FM=6.373/n/a  [132s]
+DJI9450 @3000              CT=0.00867 ( -91.0%)  CQm= -50.5%  CQ=0.000091 ( -98.7%)  FM=6.280/n/a  [106s]
+DJI9450 @4000              CT=0.00887 ( -91.0%)  CQm= -48.9%  CQ=0.000092 ( -98.6%)  FM=6.414/n/a  [92s]
+DJI9450 @5000              CT=0.00890 ( -91.3%)  CQm= -46.6%  CQ=0.000091 ( -98.6%)  FM=6.486/n/a  [92s]
+DJI9450 @6000              CT=0.00872 ( -91.6%)  CQm= -43.9%  CQ=0.000089 ( -98.6%)  FM=6.436/n/a  [90s]
+DJI9450 @7500              CT=0.00880 ( -91.4%)  CQm= -43.8%  CQ=0.000090 ( -98.6%)  FM=6.520/n/a  [80s]
+
+===== summary =====
+core C-T (theta>=8, M_tip<0.6):
+  CT th8 @1250       CT_err=  +3.5%  CQ_matched_err=  +2.6%
+  CT th12 @1250      CT_err=  +8.6%  CQ_matched_err=  -8.8%
+  max |CQ_matched_err| = 8.8%  (Gate A: <=8%)
+  max |CT_err|         = 8.6%  (A2 target: <=10%)
+
+saved results/bench/matrix_v2_ultra_phi1.20_cd1.15.json

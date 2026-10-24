@@ -1,0 +1,23 @@
+
+=== delivered-hifi  dpsi=7.5 n_rev=6.0 freeze=5.0 far=12.0 ===
+    pitch= 16.62  T= 1784.4 N  P= 31.92 kW  P_ind=29.97 P_prof= 2.23 vi_disk=16.56 m/s  [31s]
+    pitch= 19.62  T= 2213.9 N  P= 43.39 kW  P_ind=41.17 P_prof= 2.07 vi_disk=18.50 m/s  [15s]
+    pitch= 17.86  T= 1995.6 N  P= 36.61 kW  P_ind=34.39 P_prof= 2.20 vi_disk=17.67 m/s  [31s]
+    pitch= 17.66  T= 1858.6 N  P= 34.69 kW  P_ind=31.70 P_prof= 2.25 vi_disk=17.82 m/s  [40s]
+    pitch= 17.81  T= 1931.0 N  P= 35.86 kW  P_ind=33.49 P_prof= 2.23 vi_disk=17.35 m/s  [28s]
+    pitch= 17.83  T= 1960.5 N  P= 35.93 kW  P_ind=33.50 P_prof= 2.25 vi_disk=18.13 m/s  [14s]
+  trim_pitch=17.83  T=1961 N
+  P_total=35.93 kW | P_ideal=30.09 | P_axial=33.30 (92.7%) | P_swirl=0.20 (0.5%) | P_nonuni=0.67 (1.9%) | P_prof=2.25 (6.3%)
+  vi_disk=18.13 m/s vs vi_ideal=15.35 -> kappa_raw=1.181, kappa_eff=1.113
+  FM (v2 显式口径, 无 kappa_B): 0.837
+
+=== deep-wake  dpsi=7.5 n_rev=9.0 freeze=8.0 far=12.0 ===
+    pitch= 16.62  T= 1778.0 N  P= 31.85 kW  P_ind=29.41 P_prof= 2.24 vi_disk=16.55 m/s  [31s]
+    pitch= 19.62  T= 2194.1 N  P= 43.24 kW  P_ind=40.81 P_prof= 2.10 vi_disk=18.87 m/s  [33s]
+    pitch= 17.95  T= 1958.8 N  P= 36.52 kW  P_ind=33.85 P_prof= 2.24 vi_disk=17.47 m/s  [26s]
+  trim_pitch=17.95  T=1959 N
+  P_total=36.52 kW | P_ideal=30.05 | P_axial=33.66 (92.2%) | P_swirl=0.19 (0.5%) | P_nonuni=-0.20 (-0.6%) | P_prof=2.24 (6.1%)
+  vi_disk=17.47 m/s vs vi_ideal=15.34 -> kappa_raw=1.139, kappa_eff=1.127
+  FM (v2 显式口径, 无 kappa_B): 0.823
+
+saved results/diag_fm075_v2.json

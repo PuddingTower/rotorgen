@@ -1,0 +1,3 @@
+SEED: P=38144 W FM=0.7892 pitch=15.38 wall=175s
+polar cache: hits=108 miss=18 rate=86%
+constraints: []
