@@ -1,0 +1,559 @@
+"""3D rotor solver: vortex-lattice lifting surface + free-wake (PIPC relaxation).
+
+NOT strip theory / BEMT: the induced velocity everywhere is the direct Biot-Savart
+sum over the full 3D bound lattice and the freely-distorted wake; hover periodic
+state is obtained by Bagai-Leishman style pseudo-implicit predictor-corrector
+relaxation in the rotating frame.
+
+Frames
+------
+Rotor frame: z = rotation axis (thrust up), blades rotate about +z (Ω>0 CCW from
+above). Blade 0 lies along +x at psi=0; blade m is blade 0 rotated by 2 pi m/B.
+Section frame at station r: chordwise e_c = (0, cos th, -sin th), camber-normal
+e_n = (0, sin th, cos th), th = twist (positive LE up).
+
+Steady rotor-frame wake: filament nodes x(s, zeta) with zeta = age; convection
+    dx/dzeta = (V_inf + v_ind) / Omega      (V_inf = 0 in hover)
+discretized by trapezoidal predictor-corrector with over-relaxation (PIPC, w~1.9).
+
+The lattice AIC matrix is constant in the rotor frame (geometry fixed):
+factorized once; every outer iteration is one RHS build + triangular solves.
+"""
+from __future__ import annotations
+import numpy as np
+from dataclasses import dataclass, field
+from numba import njit, prange
+
+from .kernels3d import velocity_at_points, velocity_at_points_zero
+
+
+# --------------------------------------------------------------------- geometry
+
+@dataclass
+class BladeDef:
+    """Spanwise blade definition (all distributions on r/R in [0,1])."""
+    R: float
+    Rhub: float
+    B: int
+    r: np.ndarray                    # station r/R (ascending), len Ns+1 (edges)
+    chord: np.ndarray                # c/R at r
+    twist: np.ndarray                # deg at r (geometric, positive LE up)
+    sweep: np.ndarray = None         # LE sweep offset (x/c) at r (0 default)
+    camber_y: np.ndarray = None      # (Ns+1, Nc+1) camber z/c at lattice points or None
+    Nc: int = 8
+
+    def __post_init__(self):
+        if self.sweep is None:
+            self.sweep = np.zeros_like(self.r)
+        if self.camber_y is None:
+            self.camber_y = np.zeros((len(self.r), self.Nc + 1))
+
+
+def build_lattice(blade: BladeDef, Nc: int | None = None):
+    """Lattice nodes (Ns+1, Nc+1, 3), collocation pts/normals (Ns, Nc)."""
+    Nc = Nc or blade.Nc
+    r_e = blade.r * blade.R                     # span edges (m)
+    Ns = len(r_e) - 1
+    nodes = np.zeros((Ns + 1, Nc + 1, 3))
+    u = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, Nc + 1)))   # chord fraction 0..1 (LE->TE)
+    for i in range(Ns + 1):
+        c = blade.chord[i] * blade.R
+        th = np.deg2rad(blade.twist[i])
+        ec = np.array([0.0, np.cos(th), -np.sin(th)])
+        en = np.array([0.0, np.sin(th), np.cos(th)])
+        camb = blade.camber_y[i] * c
+        # pitch axis at 1/4 chord + sweep offset (LE moved aft by sweep*c)
+        for j in range(Nc + 1):
+            uj = u[j] * c
+            ref = 0.25 * c + blade.sweep[i] * c
+            nodes[i, j] = (r_e[i] * np.array([1.0, 0.0, 0.0])
+                           + (uj - ref) * ec + camb[j] * en)
+    # collocation: ring centroids, offset slightly along ring normal
+    coll = np.zeros((Ns, Nc, 3))
+    nrm = np.zeros((Ns, Nc, 3))
+    for i in range(Ns):
+        for j in range(Nc):
+            p = 0.25 * (nodes[i, j] + nodes[i + 1, j] + nodes[i + 1, j + 1] + nodes[i, j + 1])
+            d1 = nodes[i + 1, j + 1] - nodes[i, j]
+            d2 = nodes[i, j + 1] - nodes[i + 1, j]
+            n = np.cross(d1, d2)
+            n = n / np.linalg.norm(n)
+            nrm[i, j] = n
+            coll[i, j] = p + 0.001 * blade.R * n
+    return nodes, coll, nrm, Ns, Nc
+
+
+def ring_segments(nodes):
+    """Ring (i,j) loop nodes: (i,j)->(i+1,j)->(i+1,j+1)->(i,j+1).
+    Returns ring_segs (Ns*Nc, 4, 2, 3)-like flattened (n_ring*4, 6) + ring index map."""
+    Ns = nodes.shape[0] - 1
+    Nc = nodes.shape[1] - 1
+    segs = np.zeros((Ns * Nc * 4, 6))
+    k = 0
+    ring_of = np.zeros(Ns * Nc * 4, dtype=np.int64)
+    for i in range(Ns):
+        for j in range(Nc):
+            p = [nodes[i, j], nodes[i + 1, j], nodes[i + 1, j + 1], nodes[i, j + 1]]
+            for s in range(4):
+                segs[k, :3] = p[s]
+                segs[k, 3:] = p[(s + 1) % 4]
+                ring_of[k] = i * Nc + j
+                k += 1
+    return segs, ring_of, Ns, Nc
+
+
+@njit(parallel=True, cache=True, fastmath=True)
+def ring_influence_matrix(segs, ring_of, rcs2, coll, nrm, B, n_ring, A):
+    """A[i, j] += normal velocity at collocation i from unit ring j (all blades'
+    rings included in segs). coll/nrm flattened (n_ring*B? no: n_coll, 3)."""
+    n_coll = coll.shape[0]
+    n_seg = segs.shape[0]
+    for i in prange(n_coll):
+        nx, ny, nz = nrm[i, 0], nrm[i, 1], nrm[i, 2]
+        px, py, pz = coll[i, 0], coll[i, 1], coll[i, 2]
+        acc = np.zeros(n_ring)
+        for j in range(n_seg):
+            ax = px - segs[j, 0]; ay = py - segs[j, 1]; az = pz - segs[j, 2]
+            bx = px - segs[j, 3]; by = py - segs[j, 4]; bz = pz - segs[j, 5]
+            a2 = ax * ax + ay * ay + az * az + rcs2[j]
+            b2 = bx * bx + by * by + bz * bz + rcs2[j]
+            adotb = ax * bx + ay * by + az * bz
+            den = np.sqrt(a2 * b2) + adotb
+            if den < 1e-12:
+                continue
+            coef = 0.25 / np.pi * (1.0 / np.sqrt(a2) + 1.0 / np.sqrt(b2)) / den
+            cx = ay * bz - az * by
+            cy = az * bx - ax * bz
+            cz = ax * by - ay * bx
+            acc[ring_of[j]] += (cx * nx + cy * ny + cz * nz) * coef
+        for j in range(n_ring):
+            A[i, j] += acc[j]
+
+
+def rotz(v, ang):
+    c, s = np.cos(ang), np.sin(ang)
+    return np.stack([c * v[..., 0] - s * v[..., 1],
+                     s * v[..., 0] + c * v[..., 1],
+                     v[..., 2]], axis=-1)
+
+
+# --------------------------------------------------------------------- solver
+
+@dataclass
+class HoverResult:
+    CT: float
+    CQ: float
+    CP: float
+    FM: float
+    thrust: float
+    torque: float
+    power: float
+    Gamma: np.ndarray
+    converged: bool
+    n_iter: int
+    history: list = field(default_factory=list)
+
+
+class RotorSolver:
+    """Hover/axial solver with periodic free wake."""
+
+    def __init__(self, blade: BladeDef, Omega: float, rho=1.225, mu=1.8e-5,
+                 Vaxial=0.0, Nc=None, n_age=None, dpsi_deg=10.0,
+                 rc0_frac=0.10, core_grow=1.0, relax=1.9, n_rev=3.0,
+                 aero_tables=None, verbose=False):
+        self.blade = blade
+        self.Omega = Omega
+        self.rho = rho
+        self.mu = mu
+        self.Vaxial = Vaxial
+        self.Nc = Nc or blade.Nc
+        self.dpsi = np.deg2rad(dpsi_deg)
+        self.relax = relax
+        self.verbose = verbose
+        self.aero_tables = aero_tables  # callable(section_idx, alpha_deg, Re, M)->(cl, cd)
+        self.sections = aero_tables     # list of section objects with cl_of/cd_of
+
+        self.nodes, self.coll, self.nrm, self.Ns, self.Nc = build_lattice(blade, self.Nc)
+        B = blade.B
+        self.n_ring = self.Ns * self.Nc
+        # build bound segments for ALL blades (rotated copies)
+        segs0, ring_of0, _, _ = ring_segments(self.nodes)
+        segs_all = [segs0]
+        for m in range(1, B):
+            segs_all.append(rotz(segs0.reshape(-1, 2, 3), 2 * np.pi * m / B).reshape(-1, 6))
+        self.bound_segs = np.ascontiguousarray(np.vstack(segs_all))
+        # ring index mapping: blade m ring j -> global ring m*n_ring + j
+        ring_of_all = np.concatenate([ring_of0 + m * self.n_ring for m in range(B)])
+        self.ring_of = np.ascontiguousarray(ring_of_all)
+        self.n_ring_total = B * self.n_ring
+        # bound cores (small)
+        self.bound_rc2 = np.ascontiguousarray(np.full(len(self.bound_segs), (0.02 * blade.chord[-1] * blade.R) ** 2))
+        # collocation for all blades
+        coll1 = self.coll.reshape(-1, 3)
+        nrm1 = self.nrm.reshape(-1, 3)
+        coll_all = [coll1]
+        nrm_all = [nrm1]
+        for m in range(1, B):
+            coll_all.append(rotz(coll1, 2 * np.pi * m / B))
+            nrm_all.append(rotz(nrm1, 2 * np.pi * m / B))
+        self.coll_all = np.ascontiguousarray(np.vstack(coll_all))
+        self.nrm_all = np.ascontiguousarray(np.vstack(nrm_all))
+        self.coll_blade = coll1          # blade 0 only (loads etc.)
+        self.i_of_coll = np.tile(np.repeat(np.arange(self.Ns), self.Nc), B)
+        self.j_of_coll = np.tile(np.tile(np.arange(self.Nc), self.Ns), B)
+        # AIC matrix (bound-bound), constant
+        self.A = np.zeros((self.n_ring_total, self.n_ring_total))
+        ring_influence_matrix(self.bound_segs, self.ring_of, self.bound_rc2,
+                              self.coll_all, self.nrm_all, B, self.n_ring_total, self.A)
+        from scipy.linalg import lu_factor
+        self.lu = lu_factor(self.A)
+
+        # wake: filaments from station edges of blade 0 (Ns+1), TE points
+        self.n_fil = self.Ns + 1
+        self.n_age = n_age or int(round(n_rev * 2 * np.pi / self.dpsi)) + 1
+        self.rc0 = rc0_frac * blade.chord[-1] * blade.R
+        self.core_grow = core_grow
+        self.te_pts = self.nodes[:, -1, :]   # (Ns+1, 3) TE of each station edge
+
+    # ---------------------------------------------------------------- helpers
+    def _wake_core2(self):
+        ages = np.arange(self.n_age) * self.dpsi / self.Omega
+        rc2 = self.rc0 ** 2 + 4.0 * 1.05463 * self.core_grow * self.mu * ages * 50.0
+        return rc2
+
+    def init_wake(self, Gamma_te=None, ct_guess=0.01):
+        """Prescribed helical wake + momentum-consistent initial circulation."""
+        lam = np.sqrt(max(ct_guess, 1e-5) / 2.0)
+        dpsi = self.dpsi
+        n = self.n_age
+        self.Xw = np.zeros((self.n_fil, n, 3))
+        # contraction guess: wake radius shrinks toward sqrt(lambda) value
+        contr = np.ones(n)
+        for i in range(self.n_fil):
+            p0 = self.te_pts[i]
+            r0 = np.hypot(p0[0], p0[1])
+            for k in range(n):
+                psi = -k * dpsi          # wake trails behind (blade moves +psi)
+                r = r0 * contr[k]
+                z = -lam * self.blade.R * k * dpsi
+                self.Xw[i, k, 0] = r * np.cos(psi)
+                self.Xw[i, k, 1] = r * np.sin(psi)
+                self.Xw[i, k, 2] = z
+            self.Xw[i, 0] = p0
+        # initial bound circulation: Glauert-like loading consistent with ct_guess
+        qA = self.rho * (self.Omega * self.blade.R) ** 2 * np.pi * self.blade.R ** 2
+        T = ct_guess * qA
+        R_ = self.blade.R
+        r_mid = 0.5 * (self.blade.r[:-1] + self.blade.r[1:]) * R_
+        mask = (r_mid / R_ > 0.2)
+        Gamma0 = 4.0 * T / (self.rho * self.blade.B * self.Omega * R_ * np.pi)
+        g_col0 = np.where(mask, Gamma0 * np.sqrt(np.clip(1.0 - (r_mid / R_) ** 2, 0.0, 1.0)), 0.0)
+        # subtract the mean induced angle so the first solve starts near the answer
+        Gam_guess = np.tile(g_col0 / self.Nc, self.Nc)
+        self.Gamma = np.concatenate([Gam_guess] + [np.zeros(self.n_ring) for _ in range(self.blade.B - 1)])
+        self.Gamma[self.n_ring:] = 0.0  # other blades filled by symmetry below
+        # replicate blade-0 solution to other blades
+        for m in range(1, self.blade.B):
+            self.Gamma[m * self.n_ring:(m + 1) * self.n_ring] = Gam_guess
+
+    def wake_segs_gam(self, Gamma):
+        """Build wake segment arrays (all blades) from blade-0 lattice circulation.
+        Trailed filament strength at edge i = Gamma_te[i-1] - Gamma_te[i] (tip vortex
+        positive for loading increasing inboard). TE ring circulation = ring (i, Nc-1)."""
+        B = self.blade.B
+        # column circulation (total bound circulation per station cell)
+        g_col = Gamma[:self.n_ring].reshape(self.Ns, self.Nc).sum(axis=1)
+        # trailing filament at edge i carries g_col(i-1) - g_col(i); g_col(-1)=g_col(Ns)=0
+        # sign: clockwise-trailing helix needs POSITIVE circulation for downwash
+        strengths = np.zeros(self.n_fil)
+        strengths[0] = g_col[0]
+        strengths[1:-1] = g_col[1:] - g_col[:-1]
+        strengths[-1] = -g_col[-1]
+        # wake segments: filaments (n_fil) x ages
+        p1 = self.Xw[:, :-1, :]
+        p2 = self.Xw[:, 1:, :]
+        segs = np.concatenate([p1.reshape(-1, 3), p2.reshape(-1, 3)], axis=1)
+        rc2_age = self._wake_core2()
+        rc2 = 0.5 * (rc2_age[:-1] + rc2_age[1:])
+        gam = np.repeat(strengths, self.n_age - 1)
+        rcs2 = np.tile(rc2, self.n_fil)
+        # far-wake analytic helical continuation (frozen): extends last free node
+        # along its tangent for n_far_rev revolutions at coarse azimuth steps
+        if getattr(self, 'n_far_rev', 0.0) > 0:
+            dstep = max(4 * self.dpsi, np.deg2rad(25.0))
+            n_far = int(self.n_far_rev * 2 * np.pi / dstep) + 1
+            far_nodes = np.zeros((self.n_fil, n_far, 3))
+            for i in range(self.n_fil):
+                p_last = self.Xw[i, -1]
+                p_prev = self.Xw[i, -2]
+                r_end = np.hypot(p_last[0], p_last[1])
+                psi_end = np.arctan2(p_last[1], p_last[0])
+                zrate = (p_last[2] - p_prev[2]) / self.dpsi   # z per radian at freeze point
+                for k in range(n_far):
+                    zeta_k = k * dstep
+                    far_nodes[i, k] = [r_end * np.cos(psi_end - zeta_k),
+                                       r_end * np.sin(psi_end - zeta_k),
+                                       p_last[2] + zrate * zeta_k]
+            p1f = far_nodes[:, :-1, :]
+            p2f = far_nodes[:, 1:, :]
+            segs_f = np.concatenate([p1f.reshape(-1, 3), p2f.reshape(-1, 3)], axis=1)
+            gam_f = np.repeat(strengths, n_far - 1)
+            ages_f = np.arange(1, n_far) * dstep / self.Omega
+            rc2_f = np.tile(self.rc0 ** 2 + 4.0 * 1.05463 * self.core_grow * self.mu
+                            * (self.n_age * self.dpsi / self.Omega + ages_f) * 50.0, self.n_fil)
+            segs = np.vstack([segs, segs_f])
+            gam = np.concatenate([gam, gam_f])
+            rcs2 = np.concatenate([rcs2, rc2_f])
+        # all blades: rotate
+        segs_all = [segs]
+        gam_all = [gam]
+        rc_all = [rcs2]
+        for m in range(1, B):
+            segs_all.append(rotz(segs.reshape(-1, 2, 3), 2 * np.pi * m / B).reshape(-1, 6))
+            gam_all.append(gam)
+            rc_all.append(rcs2)
+        return (np.ascontiguousarray(np.vstack(segs_all)),
+                np.concatenate(gam_all), np.concatenate(rc_all))
+
+    # ---------------------------------------------------------------- solve
+    def _vel_on_coll(self, wake_segs, wake_gam, wake_rc2, out):
+        velocity_at_points(wake_segs, wake_gam, wake_rc2, self.coll_all, out)
+
+    def azimuthal_inflow(self, wake_segs, wake_gam, wake_rc2, pts, n_psi=24):
+        """Annulus-averaged wake-induced velocity at pts (n,3): average the induced
+        field over n_psi azimuthal samples (period 2pi/B). Wake segments younger
+        than excl_age_deg are excluded (their induction on the blade is already
+        represented by the bound lattice; including them double-counts and drags
+        the core singularity into the annulus mean)."""
+        B = self.blade.B
+        excl = getattr(self, 'excl_age_deg', 30.0)
+        per_fil = self.n_age - 1 + int(getattr(self, 'n_far_rev', 0.0) > 0) *             max(1, int(self.n_far_rev * 2 * np.pi / max(4 * self.dpsi, np.deg2rad(25.0))))
+        n_young = int(np.ceil(np.deg2rad(excl) / self.dpsi))
+        n_young = min(n_young, self.n_age - 1)
+        keep = np.ones(len(wake_gam), dtype=bool)
+        per_blade = len(wake_gam) // B
+        for m in range(B):
+            base = m * per_blade
+            for i in range(self.n_fil):
+                s0 = base + i * (self.n_age - 1 + getattr(self, '_n_far_seg', 0))
+                keep[s0:s0 + n_young] = False
+        if not keep.any():
+            keep[:] = True
+        out = np.zeros_like(pts)
+        tmp = np.zeros_like(pts)
+        segs_k = np.ascontiguousarray(wake_segs[keep])
+        gam_k = wake_gam[keep]
+        rc_k = wake_rc2[keep]
+        for m in range(n_psi):
+            ang = 2 * np.pi / B * m / n_psi
+            c, s = np.cos(ang), np.sin(ang)
+            rot = np.column_stack([c * pts[:, 0] - s * pts[:, 1],
+                                   s * pts[:, 0] + c * pts[:, 1],
+                                   pts[:, 2]])
+            tmp[:] = 0.0
+            velocity_at_points(segs_k, gam_k, rc_k, np.ascontiguousarray(rot), tmp)
+            out += tmp
+        return out / n_psi
+
+    def _excl_mask(self, wake_gam):
+        """Mask of wake segments with age >= excl_age_deg (excludes near-TE sheet)."""
+        B = self.blade.B
+        excl = getattr(self, 'excl_age_deg', 30.0)
+        n_young = int(np.ceil(np.deg2rad(excl) / self.dpsi))
+        n_young = min(n_young, self.n_age - 1)
+        keep = np.ones(len(wake_gam), dtype=bool)
+        per_blade = len(wake_gam) // B
+        for m in range(B):
+            base = m * per_blade
+            for i in range(self.n_fil):
+                s0 = base + i * (self.n_age - 1)
+                keep[s0:min(s0 + n_young, base + per_blade)] = False
+        return keep
+
+    def solve_gamma(self, wake_segs, wake_gam, wake_rc2, extra_twist=None):
+        vw = np.zeros_like(self.coll_all)
+        velocity_at_points(wake_segs, wake_gam, wake_rc2, self.coll_all, vw)
+        # relative velocity: Vaxial + Omega x r + wake-induced (+ alpha-coupling twist)
+        r = self.coll_all
+        vrel = np.zeros_like(r)
+        vrel[:, 0] = -self.Omega * r[:, 1]
+        vrel[:, 1] = self.Omega * r[:, 0]
+        vrel[:, 2] = self.Vaxial
+        if extra_twist is not None:
+            # rotate the relative wind by extra_twist per station (effective incidence)
+            et = extra_twist
+            if len(et) == self.n_ring:          # blade-0 stations -> tile to all blades
+                et = np.tile(et, self.blade.B)
+            thr = np.deg2rad(et)
+            vy = vrel[:, 1] * np.cos(thr) - vrel[:, 2] * np.sin(thr)
+            vz = vrel[:, 1] * np.sin(thr) + vrel[:, 2] * np.cos(thr)
+            vrel[:, 1] = vy; vrel[:, 2] = vz
+        vtot = vrel + vw
+        rhs = -np.einsum('ij,ij->i', vtot, self.nrm_all)
+        from scipy.linalg import lu_solve
+        return lu_solve(self.lu, rhs)
+
+    def relax_wake(self, Gamma, n_sweeps=2):
+        """PIPC relaxation of blade-0 wake filaments in the ROTOR frame.
+
+        Rotor-frame convection:  dx/dt = -Omega x r + V_inf + v_ind
+                              => dx/dzeta = (y, -x, 0) + (V_inf + v_ind)/Omega
+        Predictor-corrector (trapezoidal) with over-relaxation.
+        """
+        wsegs, wgam, wrc2 = self.wake_segs_gam(Gamma)
+        bgam = Gamma[self.ring_of]
+        n = self.n_age
+        dzeta = self.dpsi                      # age step in RADIANS (R is dx/dzeta)
+        vmax = 0.30 * self.Omega * self.blade.R
+        k_freeze = int(getattr(self, 'freeze_rev', 99.0) * 2 * np.pi / self.dpsi)
+        for sweep in range(n_sweeps):
+            pts = np.ascontiguousarray(self.Xw.reshape(-1, 3))
+            v = np.zeros_like(pts)
+            velocity_at_points(self.bound_segs, bgam, self.bound_rc2, pts, v)
+            velocity_at_points(wsegs, wgam, wrc2, pts, v)
+            v = v.reshape(self.n_fil, n, 3)
+            vmag = np.linalg.norm(v, axis=2)
+            scale = np.where(vmag > vmax, vmax / np.maximum(vmag, 1e-9), 1.0)
+            v = v * scale[:, :, None]
+            Xnew = self.Xw.copy()
+            for i in range(self.n_fil):
+                for k in range(1, min(n, k_freeze)):
+                    xp = Xnew[i, k - 1]
+                    xc = self.Xw[i, k]
+                    R_prev = (v[i, k - 1] + np.array([0.0, 0.0, self.Vaxial])
+                              + np.array([xp[1], -xp[0], 0.0]) * self.Omega) / self.Omega
+                    R_cur = (v[i, k] + np.array([0.0, 0.0, self.Vaxial])
+                             + np.array([xc[1], -xc[0], 0.0]) * self.Omega) / self.Omega
+                    x_corr = Xnew[i, k - 1] + dzeta * 0.5 * (R_prev + R_cur)
+                    dx = x_corr - self.Xw[i, k]
+                    dmax = 0.5 * dzeta * max(np.hypot(self.Xw[i, k, 0], self.Xw[i, k, 1]), 0.1)
+                    dxn = np.linalg.norm(dx)
+                    if dxn > dmax:
+                        dx *= dmax / dxn
+                    Xnew[i, k] = self.Xw[i, k] + self.relax_it * dx
+            self.Xw = Xnew
+            wsegs, wgam, wrc2 = self.wake_segs_gam(Gamma)
+        return wsegs, wgam, wrc2
+
+    def _station_alpha(self, wsegs, wgam, wrc2, Gamma):
+        """Effective incidence (deg) and local speed per station from local wake inflow."""
+        mid_pts = self.coll_all[:self.n_ring].reshape(self.Ns, self.Nc, 3).mean(axis=1)
+        v = np.zeros_like(mid_pts)
+        velocity_at_points(wsegs, wgam, wrc2, np.ascontiguousarray(mid_pts), v)
+        vrel = np.zeros_like(mid_pts)
+        vrel[:, 0] = -self.Omega * mid_pts[:, 1]
+        vrel[:, 1] = self.Omega * mid_pts[:, 0]
+        vrel[:, 2] = self.Vaxial
+        vtot = vrel + v
+        alpha_eff = np.degrees(np.arctan2(-vtot[:, 2], vtot[:, 1]))
+        U = np.linalg.norm(vtot[:, 1:], axis=1)
+        return alpha_eff, U, vtot
+
+    def solve(self, n_outer=12, n_sweeps=4, tol=3e-4, ct_guess=0.01, n_couple=2):
+        """Outer: (alpha-coupled Gamma) x (wake PIPC relaxation) fixed point."""
+        self.init_wake(ct_guess=ct_guess)
+        if not hasattr(self, 'relax_it'):
+            self.relax_it = min(1.6, 1.0 + 0.08 * it)
+        delta = np.zeros(self.Ns)      # alpha-coupling extra incidence per station (deg)
+        hist = []
+        converged = False
+        wsegs, wgam, wrc2 = self.wake_segs_gam(self.Gamma)
+        it = 0
+        for it in range(n_outer):
+            # --- alpha-coupled circulation solve
+            for k in range(max(1, n_couple) if self.sections is not None else 1):
+                et = np.repeat(delta, self.Nc) if np.any(delta) else None
+                Gamma = self.solve_gamma(wsegs, wgam, wrc2, extra_twist=et)
+                if self.sections is None:
+                    break
+                # smooth (annulus-mean) inflow angle for table lookups only
+                mid_pts = self.coll_all[:self.n_ring].reshape(self.Ns, self.Nc, 3).mean(axis=1)
+                vm = self.azimuthal_inflow(wsegs, wgam, wrc2, np.ascontiguousarray(mid_pts))
+                r_mid = 0.5 * (self.blade.r[:-1] + self.blade.r[1:]) * self.blade.R
+                c_mid = 0.5 * (self.blade.chord[:-1] + self.blade.chord[1:]) * self.blade.R
+                tw = 0.5 * (self.blade.twist[:-1] + self.blade.twist[1:])
+                alpha_eff = tw - np.degrees(np.arctan2(vm[:, 2], self.Omega * r_mid))
+                U = self.Omega * r_mid
+                g_col = Gamma[:self.n_ring].reshape(self.Ns, self.Nc).sum(axis=1)
+                for i in range(self.Ns):
+                    cl_lat = 2.0 * abs(g_col[i]) / (max(U[i], 1e-3) * max(c_mid[i], 1e-6))
+                    sec = self.sections[i]
+                    cl_tab = sec.cl_of(alpha_eff[i] + delta[i])
+                    resid = cl_lat - cl_tab
+                    delta[i] -= 0.15 * resid / 0.1097
+                    delta[i] = float(np.clip(delta[i], -3.0, 3.0))
+            dG = np.abs(Gamma - self.Gamma).max() if it > 0 else np.inf
+            w_gam = 0.4
+            Gamma = (1.0 - w_gam) * self.Gamma + w_gam * Gamma
+            self.Gamma = Gamma
+            self.delta_alpha = delta
+            self.relax_it = min(1.6, 1.0 + 0.08 * it)
+            wsegs, wgam, wrc2 = self.relax_wake(Gamma, n_sweeps)
+            res = self.loads(Gamma, wsegs, wgam, wrc2)
+            hist.append((res['CT'], res['CQ']))
+            if self.verbose:
+                print(f"  iter {it}: CT={res['CT']:.5f} CQ={res['CQ']:.6f} dGamma={dG:.2e}")
+            if it > 2 and dG < tol * max(np.abs(Gamma).max(), 1e-6):
+                converged = True
+                break
+        alpha_eff, U, _ = self._station_alpha(wsegs, wgam, wrc2, self.Gamma)
+        self._alpha_eff_loads = alpha_eff
+        res = self.loads(self.Gamma, wsegs, wgam, wrc2)
+        ct, cq = res['CT'], res['CQ']
+        fm = ct ** 1.5 / (np.sqrt(2.0) * cq) if cq > 0 else 0.0
+        return HoverResult(ct, cq, cq, fm, res['thrust'], res['torque'], res['power'],
+                           self.Gamma.copy(), converged, it + 1, hist)
+
+    # ---------------------------------------------------------------- loads
+    def loads(self, Gamma, wsegs, wgam, wrc2):
+        """Thrust from the far-field KJ circulation identity
+        T = rho B Omega int Gamma r dr  (exact for the converged bound sheet);
+        torque from energy-consistent annulus-mean downwash + profile terms."""
+        B = self.blade.B
+        g_col = Gamma[:self.n_ring].reshape(self.Ns, self.Nc).sum(axis=1)
+        r_e = self.blade.r * self.blade.R
+        r_mid = 0.5 * (r_e[:-1] + r_e[1:])
+        dr = r_e[1:] - r_e[:-1]
+        # (v1 ring-lattice Gamma convention: negative = positive lift)
+        thrust = -self.rho * B * self.Omega * np.sum(g_col * r_mid * dr)
+        # annulus-mean inflow for torque/alpha
+        mid_pts = self.coll_all[:self.n_ring].reshape(self.Ns, self.Nc, 3).mean(axis=1)
+        v_mean = self.azimuthal_inflow(wsegs, wgam, wrc2, np.ascontiguousarray(mid_pts))
+        torque_aero = self.rho * B * self.Omega * np.sum(
+            g_col * v_mean[:, 2] / self.Omega * r_mid * dr)
+        # profile drag from tables at annulus-mean alpha
+        tw_mid = 0.5 * (self.blade.twist[:-1] + self.blade.twist[1:])
+        c_mid = 0.5 * (self.blade.chord[:-1] + self.blade.chord[1:]) * self.blade.R
+        P_prof = 0.0
+        alpha_eff = np.zeros(self.Ns)
+        for i in range(self.Ns):
+            U = self.Omega * r_mid[i]
+            alpha = tw_mid[i] + np.degrees(np.arctan2(v_mean[i, 2], U))
+            alpha_eff[i] = alpha
+            cd = self.sections[i].cd_of(alpha) if self.sections is not None else 0.012
+            P_prof += 0.5 * self.rho * U ** 3 * cd * c_mid[i] * dr[i] * B
+        power = torque_aero * self.Omega + P_prof
+        torque = power / self.Omega
+        q = self.rho * (self.Omega * self.blade.R) ** 2 * np.pi * self.blade.R ** 2
+        self._last_alpha = alpha_eff
+        return dict(thrust=thrust, torque=torque, power=power, CT=thrust / q,
+                    CQ=torque / q, g_col=g_col)
+
+    def _profile_terms(self, Gamma, mids, vtot):
+        """Profile power from 2D tables (or flat-plate fallback)."""
+        B = self.blade.B
+        r_e = self.blade.r * self.blade.R
+        P = 0.0
+        for i in range(self.Ns):
+            r_mid = 0.5 * (r_e[i] + r_e[i + 1])
+            U = self.Omega * r_mid
+            qloc = 0.5 * self.rho * U * U
+            c = 0.5 * (self.blade.chord[i] + self.blade.chord[i + 1]) * self.blade.R
+            dr = r_e[i + 1] - r_e[i]
+            if self.sections is not None:
+                alpha_eff = getattr(self, '_alpha_eff_loads', None)
+                cd = self.sections[i].cd_of(alpha_eff[i]) if alpha_eff is not None else 0.012
+            else:
+                cd = 0.012
+            P += qloc * cd * c * dr * U * B
+        return P, P / self.Omega, 0.0

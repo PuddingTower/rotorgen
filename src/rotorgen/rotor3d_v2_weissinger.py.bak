@@ -1,0 +1,371 @@
+"""3D rotor solver: Weissinger lifting line + wake-linked horseshoes + FREE WAKE
+(Bagai-Leishman school), Numba-accelerated.
+
+Conventions (single source of truth)
+------------------------------------
+- Rotor frame rotates with blade 0 (blade 0 along +x; blade m at 2 pi m/B).
+- In this frame the AIR far from the rotor moves as solid rotation at -Omega:
+  V_air_far = (Omega*y, -Omega*x, 0) + Vaxial*zhat.
+- Positive Gamma = positive lift (+z). Trailed filaments with positive circulation
+  trail CLOCKWISE helices (psi decreasing with age) and induce DOWNWASH.
+- alpha_eff = twist + atan2(Vz, -Vy); lift perpendicular to local flow (+z-ish).
+- Wake convection (rotor frame): dx/dzeta = (y, -x, 0) + (Vaxial + v_ind)/Omega.
+
+Influence model
+---------------
+Each station j carries a horseshoe: bound segment at 1/4 chord + two legs joining
+the 1/4c endpoints to the age-1 free-wake nodes. The free wake (age >= 1)
+continues the legs with edge-strength differences -- exactly consistent sheet
+vorticity, no double counting. The A matrix is rebuilt every outer iteration
+from the current wake geometry (cheap: 3*Ns*B segments).
+
+NOT BEMT: all induced velocities are Biot-Savart integrals over the full 3D
+bound + freely-relaxed wake system (real contraction, swirl, tip loss, BVI).
+"""
+from __future__ import annotations
+import numpy as np
+from dataclasses import dataclass, field
+
+from .kernels3d import velocity_at_points
+
+
+@dataclass
+class BladeDef:
+    R: float
+    Rhub: float
+    B: int
+    r: np.ndarray            # station edges r/R ascending (len Ns+1)
+    chord: np.ndarray        # c/R at edges
+    twist: np.ndarray        # deg at edges (positive LE up)
+    sweep: np.ndarray = None
+    camber_y: np.ndarray = None
+    Nc: int = 8
+
+    def __post_init__(self):
+        if self.sweep is None:
+            self.sweep = np.zeros_like(self.r)
+
+
+def rotz(v, ang):
+    c, s = np.cos(ang), np.sin(ang)
+    return np.stack([c * v[..., 0] - s * v[..., 1],
+                     s * v[..., 0] + c * v[..., 1],
+                     v[..., 2]], axis=-1)
+
+
+@dataclass
+class HoverResult:
+    CT: float
+    CQ: float
+    CP: float
+    FM: float
+    thrust: float
+    torque: float
+    power: float
+    Gamma: np.ndarray
+    converged: bool
+    n_iter: int
+    history: list = field(default_factory=list)
+
+
+class RotorSolver:
+    def __init__(self, blade: BladeDef, Omega: float, rho=1.225, mu=1.8e-5,
+                 Vaxial=0.0, dpsi_deg=10.0, rc0_frac=0.10, core_grow=1.0,
+                 n_rev=5.0, sections=None, verbose=False):
+        self.blade = blade
+        self.Omega = Omega
+        self.rho = rho
+        self.mu = mu
+        self.Vaxial = Vaxial
+        self.dpsi = np.deg2rad(dpsi_deg)
+        self.verbose = verbose
+        self.sections = sections
+        self.Ns = len(blade.r) - 1
+        self.B = blade.B
+
+        self.p25 = np.zeros((self.Ns + 1, 3))
+        self.p75 = np.zeros((self.Ns + 1, 3))
+        self.te = np.zeros((self.Ns + 1, 3))
+        self.enrm = np.zeros((self.Ns + 1, 3))
+        for i in range(self.Ns + 1):
+            r = blade.r[i] * blade.R
+            c = blade.chord[i] * blade.R
+            th = np.deg2rad(blade.twist[i])
+            ec = np.array([0.0, np.cos(th), -np.sin(th)])
+            en = np.array([0.0, np.sin(th), np.cos(th)])
+            base = np.array([r, 0.0, 0.0])
+            self.p25[i] = base
+            self.p75[i] = base + 0.50 * c * ec
+            self.te[i] = base + 0.75 * c * ec
+            self.enrm[i] = en
+        self.bound_segs_0 = np.concatenate([self.p25[:-1], self.p25[1:]], axis=1)
+        cmax = blade.chord.max() * blade.R
+        self.rc_bound = 0.05 * cmax
+        self.coll0 = 0.5 * (self.p75[:-1] + self.p75[1:])
+        self.nrm0 = 0.5 * (self.enrm[:-1] + self.enrm[1:])
+
+        coll_all, nrm_all = [self.coll0], [self.nrm0]
+        for m in range(1, self.B):
+            coll_all.append(rotz(self.coll0, 2 * np.pi * m / self.B))
+            nrm_all.append(rotz(self.nrm0, 2 * np.pi * m / self.B))
+        self.coll_all = np.ascontiguousarray(np.vstack(coll_all))
+        self.nrm_all = np.ascontiguousarray(np.vstack(nrm_all))
+        self.bound_segs_all = np.ascontiguousarray(np.vstack(
+            [self.bound_segs_0] +
+            [rotz(self.bound_segs_0.reshape(-1, 2, 3), 2 * np.pi * m / self.B).reshape(-1, 6)
+             for m in range(1, self.B)]))
+        self.bound_rc2_all = np.ascontiguousarray(
+            np.tile(np.full(self.Ns, self.rc_bound ** 2), self.B))
+
+        self.n_fil = self.Ns + 1
+        self.n_age = int(round(n_rev * 2 * np.pi / self.dpsi)) + 1
+        self.rc0 = rc0_frac * blade.chord[-1] * blade.R
+        self.core_grow = core_grow
+        self.init_wake(ct_guess=0.005)
+        self.build_horseshoe_A()
+
+    # ------------------------------------------------------------------ horseshoe A
+    def build_horseshoe_A(self):
+        Ns, B = self.Ns, self.B
+        legs = []
+        for j in range(Ns):
+            legs.append(np.concatenate([self.p25[j], self.Xw[j, 1]]))
+            legs.append(np.concatenate([self.p25[j + 1], self.Xw[j + 1, 1]]))
+        legs = np.array(legs)
+        h0 = np.vstack([self.bound_segs_0, legs])       # (3*Ns, 6)
+        segs_all = [h0]
+        for m in range(1, B):
+            segs_all.append(rotz(h0.reshape(-1, 2, 3), 2 * np.pi * m / B).reshape(-1, 6))
+        segs_all = np.ascontiguousarray(np.vstack(segs_all))
+        n_per = 3 * Ns
+        rc2 = np.full(n_per * B, self.rc_bound ** 2)
+        A = np.zeros((Ns * B, Ns))
+        tmp = np.zeros((Ns * B, 3))
+        for j in range(Ns):
+            unit = np.zeros(n_per * B)
+            for m in range(B):
+                base = m * n_per
+                unit[base + j] = 1.0
+                unit[base + Ns + 2 * j] = 1.0
+                unit[base + Ns + 2 * j + 1] = 1.0
+            tmp[:] = 0.0
+            velocity_at_points(segs_all, unit, rc2, self.coll_all, tmp)
+            A[:, j] = np.einsum('ij,ij->i', tmp, self.nrm_all)
+        self.A_bound = np.ascontiguousarray(A[:Ns, :])
+
+    # ------------------------------------------------------------------ wake
+    def _wake_core2(self):
+        ages = np.arange(self.n_age) * self.dpsi / self.Omega
+        return self.rc0 ** 2 + 4.0 * 1.05463 * self.core_grow * self.mu * ages * 50.0
+
+    def init_wake(self, ct_guess=0.01):
+        lam = np.sqrt(max(ct_guess, 1e-5) / 2.0)
+        n = self.n_age
+        self.Xw = np.zeros((self.n_fil, n, 3))
+        for i in range(self.n_fil):
+            p0 = self.te[i]
+            r0 = np.hypot(p0[0], p0[1])
+            for k in range(n):
+                psi = -k * self.dpsi
+                self.Xw[i, k] = [r0 * np.cos(psi), r0 * np.sin(psi),
+                                 -lam * self.blade.R * k * self.dpsi]
+            self.Xw[i, 0] = p0
+        qA = self.rho * (self.Omega * self.blade.R) ** 2 * np.pi * self.blade.R ** 2
+        T = ct_guess * qA
+        R_ = self.blade.R
+        r_mid = 0.5 * (self.blade.r[:-1] + self.blade.r[1:]) * R_
+        G0 = 4.0 * T / (self.rho * self.B * self.Omega * R_ * np.pi)
+        rbar = r_mid / R_
+        ramp = np.clip((rbar - self.blade.Rhub / R_) / 0.25, 0.0, 1.0)
+        self.Gamma = G0 * np.sqrt(np.clip(1.0 - rbar ** 2, 0.0, 1.0)) * ramp
+
+    def edge_strengths(self, Gamma):
+        g = np.concatenate([[0.0], Gamma, [0.0]])
+        return g[:-1] - g[1:]
+
+    def _far_nodes(self):
+        dstep = max(4 * self.dpsi, np.deg2rad(25.0))
+        n_far = int(getattr(self, 'n_far_rev', 0.0) * 2 * np.pi / dstep) + 1
+        far = np.zeros((self.n_fil, n_far, 3))
+        for i in range(self.n_fil):
+            p_last = self.Xw[i, -1]
+            p_prev = self.Xw[i, -2]
+            r_end = np.hypot(p_last[0], p_last[1])
+            psi_end = np.arctan2(p_last[1], p_last[0])
+            zrate = (p_last[2] - p_prev[2]) / self.dpsi
+            for k in range(n_far):
+                zk = k * dstep
+                far[i, k] = [r_end * np.cos(psi_end - zk),
+                             r_end * np.sin(psi_end - zk),
+                             p_last[2] + zrate * zk]
+        return far
+
+    def wake_arrays(self, Gamma):
+        """Free-wake segments from age 1 onward (age 0-1 covered by horseshoe legs)."""
+        strengths = self.edge_strengths(Gamma)
+        Xf = self.Xw[:, 1:, :]
+        segs = np.concatenate([Xf[:, :-1, :], Xf[:, 1:, :]], axis=2).reshape(-1, 6)
+        rc2_age = self._wake_core2()
+        rc2 = np.tile(0.5 * (rc2_age[1:-1] + rc2_age[2:]), self.n_fil)
+        gam = np.repeat(strengths, self.n_age - 2)
+        if getattr(self, 'n_far_rev', 0.0) > 0:
+            far = self._far_nodes()
+            segsf = np.concatenate([far[:, :-1, :], far[:, 1:, :]],
+                                   axis=2).reshape(-1, 6)
+            gamf = np.repeat(strengths, far.shape[1] - 1)
+            dstep = max(4 * self.dpsi, np.deg2rad(25.0))
+            agesf = np.arange(1, far.shape[1]) * dstep / self.Omega
+            rc2f = np.tile(self.rc0 ** 2 + 4 * 1.05463 * self.core_grow * self.mu
+                           * (self.n_age * self.dpsi / self.Omega + agesf) * 50.0,
+                           self.n_fil)
+            segs = np.vstack([segs, segsf])
+            gam = np.concatenate([gam, gamf])
+            rc2 = np.concatenate([rc2, rc2f])
+        # hub core inflation (tightly wound root-vortex screw smoothing)
+        R_ = self.blade.R
+        rm = np.hypot(0.5 * (segs[:, 0] + segs[:, 3]), 0.5 * (segs[:, 1] + segs[:, 4]))
+        w = np.clip((0.45 * R_ - rm) / (0.25 * R_), 0.0, 1.0)
+        rc2 = rc2 * (1 - w) + (0.08 * R_) ** 2 * w
+        segs_all = [segs]
+        for m in range(1, self.B):
+            segs_all.append(rotz(segs.reshape(-1, 2, 3),
+                                 2 * np.pi * m / self.B).reshape(-1, 6))
+        return (np.ascontiguousarray(np.vstack(segs_all)),
+                np.ascontiguousarray(np.tile(gam, self.B)),
+                np.ascontiguousarray(np.tile(rc2, self.B)))
+
+    # ------------------------------------------------------------------ gamma solve
+    def solve_gamma(self, wsegs, wgam, wrc2):
+        Ns = self.Ns
+        vw = np.zeros((Ns, 3))
+        velocity_at_points(wsegs, wgam, wrc2, np.ascontiguousarray(self.coll0), vw)
+        r = self.coll0
+        vrel = np.zeros_like(r)
+        vrel[:, 0] = self.Omega * r[:, 1]
+        vrel[:, 1] = -self.Omega * r[:, 0]
+        vrel[:, 2] = self.Vaxial
+        vcap = 0.20 * self.Omega * self.blade.R
+        vw = np.clip(vw, -vcap, vcap)
+        vtot = vrel + vw
+        rhs = -np.einsum('ij,ij->i', vtot, self.nrm0)
+        return np.linalg.solve(self.A_bound, rhs)
+
+    # ------------------------------------------------------------------ wake relax
+    def relax_wake(self, Gamma, n_sweeps=3):
+        wsegs, wgam, wrc2 = self.wake_arrays(Gamma)
+        bound_gam = np.tile(Gamma, self.B)
+        n = self.n_age
+        dzeta = self.dpsi
+        k_freeze = int(getattr(self, 'freeze_rev', 99.0) * 2 * np.pi / self.dpsi)
+        vmax = 0.30 * self.Omega * self.blade.R
+        for sweep in range(n_sweeps):
+            pts = np.ascontiguousarray(self.Xw.reshape(-1, 3))
+            v = np.zeros_like(pts)
+            velocity_at_points(self.bound_segs_all, bound_gam,
+                               self.bound_rc2_all, pts, v)
+            velocity_at_points(wsegs, wgam, wrc2, pts, v)
+            v = v.reshape(self.n_fil, n, 3)
+            vmag = np.linalg.norm(v, axis=2)
+            scale = np.where(vmag > vmax, vmax / np.maximum(vmag, 1e-9), 1.0)
+            v = v * scale[:, :, None]
+            Xnew = self.Xw.copy()
+            for i in range(self.n_fil):
+                for k in range(1, min(n, k_freeze)):
+                    xp = Xnew[i, k - 1]
+                    xc = self.Xw[i, k]
+                    R_prev = (v[i, k - 1] + np.array([0.0, 0.0, self.Vaxial])
+                              + np.array([xp[1], -xp[0], 0.0]) * self.Omega) / self.Omega
+                    R_cur = (v[i, k] + np.array([0.0, 0.0, self.Vaxial])
+                             + np.array([xc[1], -xc[0], 0.0]) * self.Omega) / self.Omega
+                    x_corr = Xnew[i, k - 1] + dzeta * 0.5 * (R_prev + R_cur)
+                    dx = x_corr - self.Xw[i, k]
+                    dmax = 0.5 * dzeta * max(np.hypot(self.Xw[i, k, 0],
+                                                      self.Xw[i, k, 1]), 0.1)
+                    dxn = np.linalg.norm(dx)
+                    if dxn > dmax:
+                        dx *= dmax / dxn
+                    Xnew[i, k] = self.Xw[i, k] + getattr(self, 'relax_it', 1.0) * dx
+            self.Xw = Xnew
+            wsegs, wgam, wrc2 = self.wake_arrays(Gamma)
+        return wsegs, wgam, wrc2
+
+    # ------------------------------------------------------------------ loads
+    def loads(self, Gamma, wsegs, wgam, wrc2):
+        bound_gam = np.tile(Gamma, self.B)
+        v = np.zeros_like(self.coll0)
+        velocity_at_points(wsegs, wgam, wrc2, np.ascontiguousarray(self.coll0), v)
+        if self.B > 1:
+            other = np.ascontiguousarray(self.bound_segs_all[self.Ns:])
+            velocity_at_points(other, bound_gam[self.Ns:],
+                               self.bound_rc2_all[self.Ns:],
+                               np.ascontiguousarray(self.coll0), v)
+        vrel = np.zeros_like(self.coll0)
+        vrel[:, 0] = self.Omega * self.coll0[:, 1]
+        vrel[:, 1] = -self.Omega * self.coll0[:, 0]
+        vrel[:, 2] = self.Vaxial
+        vtot = vrel + v
+        r_mid = 0.5 * (self.blade.r[:-1] + self.blade.r[1:]) * self.blade.R
+        dr = np.diff(self.blade.r) * self.blade.R
+        c_mid = 0.5 * (self.blade.chord[:-1] + self.blade.chord[1:]) * self.blade.R
+        tw_mid = 0.5 * (self.blade.twist[:-1] + self.blade.twist[1:])
+        vcap = 0.20 * self.Omega * self.blade.R
+        thrust = 0.0
+        torque = 0.0
+        alpha_eff = np.zeros(self.Ns)
+        for i in range(self.Ns):
+            fy = float(np.clip(vtot[i, 1], -vcap, vcap))
+            fz = float(np.clip(vtot[i, 2], -vcap, vcap))
+            U = np.hypot(fy, fz)
+            alpha = tw_mid[i] + np.degrees(np.arctan2(fz, -fy))
+            alpha = float(np.clip(alpha, -30.0, 30.0))
+            alpha_eff[i] = alpha
+            if self.sections is not None:
+                sec = self.sections[i]
+                cl = sec.cl_of(alpha)
+                cd = sec.cd_of(alpha)
+            else:
+                cl = 0.1097 * alpha
+                cd = 0.010
+            qloc = 0.5 * self.rho * U * U
+            L = qloc * cl * c_mid[i] * dr[i]
+            D = qloc * cd * c_mid[i] * dr[i]
+            e_D = np.array([0.0, fy, fz]) / max(U, 1e-6)
+            e_L = np.array([0.0, fz, -fy]) / max(U, 1e-6)
+            F = L * e_L + D * e_D
+            thrust += F[2]
+            torque += r_mid[i] * F[1]
+        thrust *= self.B
+        torque *= self.B
+        power = torque * self.Omega
+        q = self.rho * (self.Omega * self.blade.R) ** 2 * np.pi * self.blade.R ** 2
+        self._last_alpha = alpha_eff
+        return dict(thrust=thrust, torque=torque, power=power,
+                    CT=thrust / q, CQ=torque / q)
+
+    # ------------------------------------------------------------------ main
+    def solve(self, n_outer=20, n_sweeps=3, tol=3e-4, ct_guess=0.01):
+        self.init_wake(ct_guess=ct_guess)
+        self.relax_it = 1.0
+        w_rel = getattr(self, 'gamma_relax', 0.5)
+        hist = []
+        wsegs, wgam, wrc2 = self.wake_arrays(self.Gamma)
+        res = None
+        converged = False
+        it = 0
+        for it in range(n_outer):
+            self.build_horseshoe_A()
+            Gamma = self.solve_gamma(wsegs, wgam, wrc2)
+            dG = np.abs(Gamma - self.Gamma).max() if it > 0 else np.inf
+            self.Gamma = (1.0 - w_rel) * self.Gamma + w_rel * Gamma
+            wsegs, wgam, wrc2 = self.relax_wake(self.Gamma, n_sweeps)
+            res = self.loads(self.Gamma, wsegs, wgam, wrc2)
+            hist.append((res['CT'], res['CQ']))
+            if self.verbose:
+                print(f"  it {it}: CT={res['CT']:.5f} CQ={res['CQ']:.6f} dG={dG:.2e}")
+            if it > 2 and dG < tol * max(np.abs(self.Gamma).max(), 1e-6):
+                converged = True
+                break
+        ct, cq = res['CT'], res['CQ']
+        fm = ct ** 1.5 / (np.sqrt(2.0) * cq) if cq > 0 else 0.0
+        return HoverResult(ct, cq, cq, fm, res['thrust'], res['torque'], res['power'],
+                           self.Gamma.copy(), converged, it + 1, hist)

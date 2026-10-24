@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.nbi
+*.nbc
+
+# ZCode session artifacts
+.zcode/
+
+# Third-party code clones (upstream: https://github.com/cayetanomarmur/NFoil)
+docs/NFoil/
+
+# Benchmark data lives in its own repo:
+# https://github.com/PuddingTower/rotor-propeller-benchmarks
+benchmarks/
+
+# Literature PDFs (copyright — do not redistribute)
+_lit/

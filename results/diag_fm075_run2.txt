@@ -1,0 +1,32 @@
+
+=== delivered-hifi  dpsi=7.5 n_rev=6.0 freeze=5.0 far=7.0 ===
+    pitch= 16.62  T= 1759.5 N  P= 38.60 kW  P_ind=36.55 P_prof= 2.19 vi_disk=17.85 m/s  [13s]
+    pitch= 19.62  T= 2231.2 N  P= 52.67 kW  P_ind=49.19 P_prof= 2.16 vi_disk=18.97 m/s  [12s]
+    pitch= 17.91  T= 1942.8 N  P= 44.11 kW  P_ind=42.07 P_prof= 2.23 vi_disk=18.89 m/s  [12s]
+  trim_pitch=17.91  T=1943 N
+  P_total=44.11 kW | P_ideal=29.68 | P_ind=42.07 (95.4%) | P_prof=2.23 (5.0%)
+  vi_disk=18.89 m/s vs vi_ideal=15.28 -> kappa_raw=1.236, kappa_B=1.20, kappa_eff=1.418
+  FM (交付口径 kappa_B=1.2): 0.673
+  FM (纯尾迹口径 kappa_B=1.0): 0.763
+
+=== deep-wake  dpsi=7.5 n_rev=9.0 freeze=8.0 far=12.0 ===
+    pitch= 16.62  T= 1778.0 N  P= 38.56 kW  P_ind=35.59 P_prof= 2.24 vi_disk=16.77 m/s  [25s]
+    pitch= 19.62  T= 2194.1 N  P= 52.14 kW  P_ind=49.07 P_prof= 2.10 vi_disk=19.03 m/s  [25s]
+    pitch= 17.95  T= 1958.8 N  P= 44.35 kW  P_ind=41.79 P_prof= 2.24 vi_disk=18.07 m/s  [25s]
+  trim_pitch=17.95  T=1959 N
+  P_total=44.35 kW | P_ideal=30.05 | P_ind=41.79 (94.2%) | P_prof=2.24 (5.1%)
+  vi_disk=18.07 m/s vs vi_ideal=15.34 -> kappa_raw=1.178, kappa_B=1.20, kappa_eff=1.391
+  FM (交付口径 kappa_B=1.2): 0.678
+  FM (纯尾迹口径 kappa_B=1.0): 0.798
+
+=== ultra  dpsi=5.0 n_rev=10.0 freeze=9.0 far=12.0 ===
+    pitch= 16.62  T= 1778.0 N  P= 37.97 kW  P_ind=34.01 P_prof= 2.21 vi_disk=15.90 m/s  [57s]
+    pitch= 19.62  T= 2209.8 N  P= 52.28 kW  P_ind=50.91 P_prof= 2.14 vi_disk=18.83 m/s  [57s]
+    pitch= 17.90  T= 1942.5 N  P= 42.90 kW  P_ind=40.66 P_prof= 2.23 vi_disk=18.20 m/s  [57s]
+  trim_pitch=17.90  T=1943 N
+  P_total=42.90 kW | P_ideal=29.67 | P_ind=40.66 (94.8%) | P_prof=2.23 (5.2%)
+  vi_disk=18.20 m/s vs vi_ideal=15.28 -> kappa_raw=1.192, kappa_B=1.20, kappa_eff=1.370
+  FM (交付口径 kappa_B=1.2): 0.692
+  FM (纯尾迹口径 kappa_B=1.0): 0.789
+
+saved results/diag_fm075.json
