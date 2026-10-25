@@ -179,8 +179,11 @@ def main():
                 hifi_check(np.array(b["x"]), tag=gen)
             except Exception as e:
                 print("hifi check failed:", e, flush=True)
+        # es.best.x is the best-solution vector (ndarray); guard with `is not None`
+        # (bare truth-testing an ndarray raises ValueError, killing the run at the
+        # end of every generation)
         json.dump(dict(gen=gen, sigma=float(es.sigma),
-                       xbest=list(map(float, es.best.x[-1])) if es.best.x else None),
+                       xbest=list(map(float, es.best.x)) if es.best.x is not None else None),
                   open("E:/旋翼设计/results/cmaes_state.json", "w"), default=float)
     print("CMA-ES done:", es.stop(), flush=True)
     b = json.load(open(BEST_JSON))

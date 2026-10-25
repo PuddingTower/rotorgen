@@ -62,7 +62,8 @@ def run_pitch(x, pitch, cfg, phi=1.3, cdf=1.0):
                     ct_guess=max(T_TARGET / (RHO * np.pi * R ** 2 * x[0] ** 2), 1e-4))
     h = np.array(res.history)
     T = float(h[-6:, 0].mean()) * RHO * np.pi * R ** 2 * x[0] ** 2
-    P = float(h[-6:, 1].mean()) * RHO * x[0] ** 2 * np.pi * R ** 2 * x[0] / R
+    # P = CQ * rho * Vt^3 * pi * R^2  (fixed 2026-10-25; leftover /R removed)
+    P = float(h[-6:, 1].mean()) * RHO * x[0] ** 2 * np.pi * R ** 2 * x[0]
     ld = sol._last_loads
     print(f"    pitch={pitch:6.2f}  T={T:7.1f} N  P={P/1000:6.2f} kW  "
           f"P_ind={ld['P_ind']/1e3:5.2f} P_prof={ld['P_prof']/1e3:5.2f} "

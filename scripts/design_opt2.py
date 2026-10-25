@@ -162,7 +162,9 @@ def eval_thrust(x, trim_pitch, tier="fast"):
     T = ct * RHO * np.pi * R ** 2 * x[0] ** 2
     q = RHO * x[0] ** 2 * np.pi * R ** 2
     cq = float(h[-w:, 1].mean())
-    P = cq * q * x[0] / R
+    # P = CQ * rho * Vt^3 * pi * R^2 = CQ * q * Vt  (fixed 2026-10-25; a leftover
+    # "/R" from the pre-fix CQ convention understated power by 4.3%)
+    P = cq * q * x[0]
     return T, P, sol
 
 

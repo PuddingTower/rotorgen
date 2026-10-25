@@ -16,3 +16,12 @@ benchmarks/
 
 # Literature PDFs (copyright — do not redistribute)
 _lit/
+
+# Regenerable verification/PDF intermediates (scripts/verify_*.py, scripts/gen_*_pdf.py)
+results/verif_*.npz
+results/verif_body.pdf
+results/verif_cover.pdf
+results/guide_body.pdf
+results/guide_cover.pdf
+results/verif_pages/
+results/guide_pages/

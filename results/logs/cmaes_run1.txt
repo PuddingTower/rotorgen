@@ -1,1 +1,87 @@
 CMA-ES start: dim=17 popsize=14 sigma0=0.22 gens=40
+=== watchdog resume: 2026-10-24T23:00:07+08:00 | relaunching CMA-ES (user: do not stop) ===
+CMA-ES start: dim=17 popsize=14 sigma0=0.22 gens=40
+[gen   1] best=36532 W  FM~0.8241  sigma=0.206  evals=14
+Traceback (most recent call last):
+  File "E:\旋翼设计\scripts\opt_cmaes.py", line 191, in <module>
+    main()
+    ~~~~^^
+  File "E:\旋翼设计\scripts\opt_cmaes.py", line 183, in main
+    xbest=list(map(float, es.best.x[-1])) if es.best.x else None),
+                                             ^^^^^^^^^
+ValueError: The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()
+=== relaunch after crash-bug fix: 2026-10-24T23:10:29+08:00 ===
+CMA-ES start: dim=17 popsize=14 sigma0=0.22 gens=40
+[gen   1] best=36532 W  FM~0.8241  sigma=0.206  evals=14
+[gen   2] best=40461 W  FM~0.7440  sigma=0.206  evals=28
+[gen   3] best=39315 W  FM~0.7657  sigma=0.203  evals=42
+E:\旋翼设计/src\rotorgen\rotor3d.py:437: RuntimeWarning: invalid value encountered in scalar power
+  fm = ct ** 1.5 / (np.sqrt(2.0) * cq) if cq > 0 else 0.0
+[gen   4] best=34164 W  FM~0.8812  sigma=0.199  evals=56
+[gen   5] best=37126 W  FM~0.8109  sigma=0.198  evals=70
+[gen   6] best=35755 W  FM~0.8420  sigma=0.185  evals=84
+[gen   7] best=36983 W  FM~0.8140  sigma=0.181  evals=98
+[gen   8] best=38821 W  FM~0.7755  sigma=0.172  evals=112
+[hifi check @8] P=44259 FM=0.6802 pitch=16.38 ['stall@st0']
+[gen   9] best=38488 W  FM~0.7822  sigma=0.170  evals=126
+[gen  10] best=36343 W  FM~0.8284  sigma=0.173  evals=140
+[gen  11] best=39129 W  FM~0.7694  sigma=0.167  evals=154
+[gen  12] best=35009 W  FM~0.8599  sigma=0.167  evals=168
+[gen  13] best=35720 W  FM~0.8428  sigma=0.167  evals=182
+[gen  14] best=40654 W  FM~0.7405  sigma=0.162  evals=196
+[gen  15] best=33304 W  FM~0.9039  sigma=0.164  evals=210
+[gen  16] best=32805 W  FM~0.9177  sigma=0.169  evals=224
+[hifi check @16] P=35137 FM=0.8568 pitch=15.62 OK
+[gen  17] best=36849 W  FM~0.8170  sigma=0.186  evals=238
+[gen  18] best=37335 W  FM~0.8063  sigma=0.192  evals=252
+[gen  19] best=36340 W  FM~0.8284  sigma=0.199  evals=266
+[gen  20] best=36125 W  FM~0.8334  sigma=0.195  evals=280
+[gen  21] best=33127 W  FM~0.9088  sigma=0.197  evals=294
+[gen  22] best=37752 W  FM~0.7974  sigma=0.201  evals=308
+[gen  23] best=30025 W  FM~1.0027  sigma=0.199  evals=322
+[gen  24] best=37869 W  FM~0.7950  sigma=0.194  evals=336
+[hifi check @24] P=34971 FM=0.8609 pitch=13.75 ['stall@st0']
+[gen  25] best=31208 W  FM~0.9647  sigma=0.186  evals=350
+[gen  26] best=30090 W  FM~1.0005  sigma=0.177  evals=364
+[gen  27] best=33863 W  FM~0.8890  sigma=0.178  evals=378
+[gen  28] best=34425 W  FM~0.8745  sigma=0.172  evals=392
+[gen  29] best=32071 W  FM~0.9387  sigma=0.174  evals=406
+[gen  30] best=32924 W  FM~0.9144  sigma=0.170  evals=420
+[gen  31] best=26567 W  FM~1.1332  sigma=0.160  evals=434
+[gen  32] best=31274 W  FM~0.9626  sigma=0.162  evals=448
+[hifi check @32] P=37183 FM=0.8096 pitch=14.50 ['stall@st9']
+[gen  33] best=30508 W  FM~0.9868  sigma=0.158  evals=462
+[gen  34] best=30423 W  FM~0.9895  sigma=0.153  evals=476
+[gen  35] best=30280 W  FM~0.9942  sigma=0.144  evals=490
+[gen  36] best=31690 W  FM~0.9500  sigma=0.141  evals=504
+[gen  37] best=30953 W  FM~0.9726  sigma=0.141  evals=518
+[gen  38] best=33911 W  FM~0.8878  sigma=0.138  evals=532
+[gen  39] best=33640 W  FM~0.8949  sigma=0.134  evals=546
+[gen  40] best=31223 W  FM~0.9642  sigma=0.126  evals=560
+[hifi check @40] P=37183 FM=0.8096 pitch=14.50 ['stall@st9']
+CMA-ES done: {}
+BEST: {
+ "gen": 30,
+ "FM": 1.1332,
+ "P": 26566.98928482656,
+ "pitch": 13.379,
+ "x": [
+  156.4639,
+  11.4841,
+  3.1673,
+  3.03,
+  4.032,
+  3.0268,
+  3.2803,
+  0.3017,
+  0.332,
+  0.1559,
+  0.34,
+  0.3322,
+  0.0006,
+  0.0413,
+  0.047,
+  0.156,
+  0.1155
+ ]
+}
